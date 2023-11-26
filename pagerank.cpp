@@ -17,8 +17,9 @@ using namespace std;
 #define CURRENT 0
 #define NEXT 1
 
+pthread_barrier_t barrier;
 struct timespec start, finish;
-int num_threads = 8;
+int num_threads = 4;
 
 class CsrGraph {
 // You shouldn't need to modify this class except for adding essential locks and relevant methods,
@@ -286,9 +287,7 @@ void reset_next_label_parallel(int thread_id, CsrGraph* g, const double damping)
   int num_nodes = g->node_size();
 
   for (int n = thread_id + 1; n <= num_nodes; n+=num_threads) {
-    g->acquire_lock(n);
     g->set_label(n, NEXT, (1.0 - damping) / (double) num_nodes);
-    g->release_lock(n);
   }
 }
 
@@ -299,6 +298,8 @@ void reset_next_label_atomic(int thread_id, CsrGraph* g, const double damping) {
     g->set_label_atomic(n, NEXT, (1.0 - damping) / (double) num_nodes);
   }
 }
+
+int iteration = 0;
 
 bool is_converged(CsrGraph* g, const double threshold) {
   // Modify this function in any way you want to make pagerank parallel
@@ -314,14 +315,15 @@ bool is_converged(CsrGraph* g, const double threshold) {
 }
 
 bool is_converged_parallel(int thread_id, CsrGraph* g, const double threshold) {
+  // if (thread_id == 0 && ++iteration == 27) {
+  //   cout << "Should stop here" << endl;
+  // }
   // Modify this function in any way you want to make pagerank parallel
   int num_nodes = g->node_size();
   for (int n = thread_id + 1; n <= num_nodes; n+=num_threads) {
-    g->acquire_lock(n);
     const double cur_label = g->get_label(n, CURRENT);
     const double next_label = g->get_label(n, NEXT);
-    g->release_lock(n);
-    const double percent_change = fabs(1 - (next_label / cur_label));
+    const double percent_change = fabs(1 - (cur_label / next_label));
     if (percent_change > threshold) {
       return false;
     }
@@ -335,7 +337,7 @@ bool is_converged_atomic(int thread_id, CsrGraph* g, const double threshold) {
   for (int n = thread_id + 1; n <= num_nodes; n+=num_threads) {
     const double cur_label = g->get_label_atomic(n, CURRENT);
     const double next_label = g->get_label_atomic(n, NEXT);
-    const double percent_change = fabs(1 - (next_label / cur_label));
+    const double percent_change = fabs(1 - (cur_label / next_label));
     if (percent_change > threshold) {
       return false;
     }
@@ -354,9 +356,7 @@ void update_current_label_parallel(int thread_id, CsrGraph* g) {
   int num_nodes = g->node_size();
   // Modify this function in any way you want to make pagerank parallel
   for (int n = thread_id + 1; n <= num_nodes; n+=num_threads) {
-    g->acquire_lock(n);
     g->set_label(n, CURRENT, g->get_label(n, NEXT));
-    g->release_lock(n);
   }
 }
 
@@ -382,7 +382,7 @@ void scale(CsrGraph* g) {
 double o_sum;
 pthread_mutex_t o_sum_mutex;
 
-void scale_mutex(int thread_id, CsrGraph* g, pthread_barrier_t* barrier) {
+void scale_mutex(int thread_id, CsrGraph* g) {
   // Modify this function in any way you want to make pagerank parallel
   double sum = 0.0;
   int num_nodes = g->node_size();
@@ -393,7 +393,7 @@ void scale_mutex(int thread_id, CsrGraph* g, pthread_barrier_t* barrier) {
   o_sum += sum;
   pthread_mutex_unlock(&o_sum_mutex);
 
-  pthread_barrier_wait(barrier);
+  pthread_barrier_wait(&barrier);
 
   for (int n = thread_id + 1; n <= num_nodes; n+=num_threads) {
     g->set_label(n, CURRENT, g->get_label(n, CURRENT) / o_sum);
@@ -402,7 +402,7 @@ void scale_mutex(int thread_id, CsrGraph* g, pthread_barrier_t* barrier) {
 
 pthread_spinlock_t o_sum_spinlock;
 
-void scale_spinlock(int thread_id, CsrGraph* g, pthread_barrier_t* barrier) {
+void scale_spinlock(int thread_id, CsrGraph* g) {
   // Modify this function in any way you want to make pagerank parallel
   double sum = 0.0;
   int num_nodes = g->node_size();
@@ -413,7 +413,7 @@ void scale_spinlock(int thread_id, CsrGraph* g, pthread_barrier_t* barrier) {
   o_sum += sum;
   pthread_spin_unlock(&o_sum_spinlock);
 
-  pthread_barrier_wait(barrier);
+  pthread_barrier_wait(&barrier);
 
   for (int n = thread_id + 1; n <= num_nodes; n+=num_threads) {
     g->set_label(n, CURRENT, g->get_label(n, CURRENT) / o_sum);
@@ -422,7 +422,7 @@ void scale_spinlock(int thread_id, CsrGraph* g, pthread_barrier_t* barrier) {
 
 atomic<double> o_sum_atomic{0.0};
 
-void scale_atomic(int thread_id, CsrGraph* g, pthread_barrier_t* barrier) {
+void scale_atomic(int thread_id, CsrGraph* g) {
   // Modify this function in any way you want to make pagerank parallel
   double sum = 0.0;
   int num_nodes = g->node_size();
@@ -433,7 +433,7 @@ void scale_atomic(int thread_id, CsrGraph* g, pthread_barrier_t* barrier) {
   double o_sum = o_sum_atomic;
   while (!o_sum_atomic.compare_exchange_weak(o_sum, o_sum + sum));
 
-  pthread_barrier_wait(barrier);
+  pthread_barrier_wait(&barrier);
 
   double f_sum = o_sum_atomic;
   for (int n = thread_id + 1; n <= num_nodes; n+=num_threads) {
@@ -446,7 +446,6 @@ struct thread_data {
   CsrGraph* g;
   double threshold;
   double damping;
-  pthread_barrier_t* barrier;
 };
 
 bool converged = true;
@@ -464,7 +463,6 @@ void* compute_pagerank_spinlock(void* threadarg) {
   double threshold = my_data->threshold;
   double damping = my_data->damping;
   int thread_id = my_data->thread_id;
-  pthread_barrier_t* barrier = my_data->barrier;
 
   // initialize
   bool convergence = false;
@@ -474,14 +472,14 @@ void* compute_pagerank_spinlock(void* threadarg) {
   }
 
   do {
-    pthread_barrier_wait(barrier);
+    pthread_barrier_wait(&barrier);
 
     if (thread_id == 0) 
       converged = true;
     // reset next labels
     reset_next_label_parallel(thread_id, g, damping);
 
-    pthread_barrier_wait(barrier);
+    pthread_barrier_wait(&barrier);
 
     // apply current node contribution to others
     for (int n = thread_id; n <= num_nodes; n+=num_threads) {
@@ -494,19 +492,22 @@ void* compute_pagerank_spinlock(void* threadarg) {
       }
     }
 
-    // check the change across successive iterations to determine convergence
-    pthread_spin_lock(&converged_spinlock);
-    converged = converged && is_converged_parallel(thread_id, g, threshold);
-    pthread_spin_unlock(&converged_spinlock);
+    pthread_barrier_wait(&barrier);
 
-    pthread_barrier_wait(barrier);
+    // check the change across successive iterations to determine convergence
+    bool my_converged = is_converged_parallel(thread_id, g, threshold);
+    pthread_spin_lock(&converged_spinlock);
+    converged = converged && my_converged;
+    pthread_spin_unlock(&converged_spinlock);
 
     // update current labels
     update_current_label_parallel(thread_id, g);
+
+    pthread_barrier_wait(&barrier);
   } while(!converged);
 
   // scale the sum to 1
-  scale_spinlock(thread_id, g, barrier);
+  scale_spinlock(thread_id, g);
 
   return NULL;
 }
@@ -518,8 +519,6 @@ void init_mutex() {
   pthread_mutex_init(&o_sum_mutex, NULL);
 }
 
-int iteration = 0;
-
 void* compute_pagerank_mutex(void* threadarg) {
   // You have to divide the work and assign it to threads to make this function parallel
   struct thread_data* my_data = (struct thread_data*) threadarg;
@@ -527,7 +526,6 @@ void* compute_pagerank_mutex(void* threadarg) {
   double threshold = my_data->threshold;
   double damping = my_data->damping;
   int thread_id = my_data->thread_id;
-  pthread_barrier_t* barrier = my_data->barrier;
 
   // initialize
   int num_nodes = g->node_size();
@@ -536,7 +534,7 @@ void* compute_pagerank_mutex(void* threadarg) {
   }
 
   do {
-    pthread_barrier_wait(barrier);
+    pthread_barrier_wait(&barrier);
 
     if (thread_id == 0) 
       converged = true;
@@ -544,7 +542,7 @@ void* compute_pagerank_mutex(void* threadarg) {
     // reset next labels
     reset_next_label_parallel(thread_id, g, damping);
 
-    pthread_barrier_wait(barrier);
+    pthread_barrier_wait(&barrier);
 
     // apply current node contribution to others
     for (int n = thread_id + 1; n <= num_nodes; n+=num_threads) {
@@ -557,20 +555,13 @@ void* compute_pagerank_mutex(void* threadarg) {
       }
     }
 
+    pthread_barrier_wait(&barrier);
+
     // check the change across successive iterations to determine convergence
+    bool my_converged = is_converged_parallel(thread_id, g, threshold);
     pthread_mutex_lock(&converged_mutex);
-    converged = converged && is_converged_parallel(thread_id, g, threshold);
+    converged = converged && my_converged;
     pthread_mutex_unlock(&converged_mutex);
-
-    pthread_barrier_wait(barrier);
-
-    // if (thread_id == 0) {
-    //   cout << "NEXT      ";
-    //   for (int n = 1; n <= num_nodes; n++) {
-    //     cout << g->get_label(n, NEXT) << " ";
-    //   }
-    //   cout << endl;
-    // }
 
     // update current labels
     update_current_label_parallel(thread_id, g);
@@ -582,10 +573,12 @@ void* compute_pagerank_mutex(void* threadarg) {
     //   }
     //   cout << endl;
     // }
+
+    pthread_barrier_wait(&barrier);
   } while(!converged);
 
   // scale the sum to 1
-  scale_mutex(thread_id, g, barrier);
+  scale_mutex(thread_id, g);
 
   return NULL;
 }
@@ -604,7 +597,6 @@ void* compute_pagerank_atomic(void* threadarg) {
   double threshold = my_data->threshold;
   double damping = my_data->damping;
   int thread_id = my_data->thread_id;
-  pthread_barrier_t* barrier = my_data->barrier;
 
   // initialize
   int num_nodes = g->node_size();
@@ -613,14 +605,14 @@ void* compute_pagerank_atomic(void* threadarg) {
   }
 
   do {
-    pthread_barrier_wait(barrier);
+    pthread_barrier_wait(&barrier);
 
     if (thread_id == 0) 
       converged_atomic.store(true);
     // reset next labels
     reset_next_label_atomic(thread_id, g, damping);
 
-    pthread_barrier_wait(barrier);
+    pthread_barrier_wait(&barrier);
 
     // apply current node contribution to others
     for (int n = thread_id + 1; n <= num_nodes; n+=num_threads) {
@@ -632,18 +624,20 @@ void* compute_pagerank_atomic(void* threadarg) {
       }
     }
 
+    pthread_barrier_wait(&barrier);
+
     // check the change across successive iterations to determine convergence
     bool converge = converged_atomic;
     while (!converged_atomic.compare_exchange_weak(converge, converge && is_converged_atomic(thread_id, g, threshold)));
 
-    pthread_barrier_wait(barrier);
-
     // update current labels
     update_current_label_atomic(thread_id, g);
+
+    pthread_barrier_wait(&barrier);
   } while(!converged_atomic.load());
 
   // scale the sum to 1
-  scale_atomic(thread_id, g, barrier);
+  scale_atomic(thread_id, g);
 
   return NULL;
 }
@@ -676,10 +670,6 @@ void compute_pagerank_serial(CsrGraph* g, const double threshold, const double d
 
     // update current labels
     update_current_label(g);
-    for (int n = 1; n <= num_nodes; n++) {
-      cout << g->get_label(n, CURRENT) << " ";
-    }
-    cout << endl;
   } while(!convergence);
 
   // scale the sum to 1
@@ -699,7 +689,6 @@ void compute_pagerank(int type, CsrGraph* g, const double threshold, const doubl
   int thread_ids[num_threads];
 
   // Create barrier
-  pthread_barrier_t barrier;
   pthread_barrier_init(&barrier, NULL, num_threads);
 
   // Create function pointer to function with desired type of synchronization
@@ -727,7 +716,7 @@ void compute_pagerank(int type, CsrGraph* g, const double threshold, const doubl
   clock_gettime(CLOCK_MONOTONIC, &start);
   for (int i = 0; i < num_threads; i++) {
     thread_ids[i] = i;
-    struct thread_data* data = new thread_data {i, g, threshold, damping, &barrier};
+    struct thread_data* data = new thread_data {i, g, threshold, damping};
     pthread_create(&threads[i], NULL, compute_pagerank_func, (void*) data);
   }
 
@@ -774,25 +763,24 @@ void sort_and_print_label(CsrGraph* g, string out_file) {
 
 int main(int argc, char *argv[]) {
   // Ex: ./pagerank road-NY.dimacs road-NY.txt
-  // if (argc < 4) {
-  //   cerr << "Usage: " << argv[0] << " <input.dimacs> <output_filename>\n";
-  //   return 0;
-  // }
+  if (argc < 5) {
+    cerr << "Usage: " << argv[0] << " <input.dimacs> <output_filename>\n";
+    return 0;
+  }
 
   // make sure the input argument is valid
-  ifstream f_dimacs("rmat15.dimacs");
-  // ifstream f_dimacs(argv[1]);
-  // if (!f_dimacs) {
-  //   cerr << "Failed to open " << argv[1] << endl;
-  //   return 0;
-  // }
+  ifstream f_dimacs(argv[1]);
+  if (!f_dimacs) {
+    cerr << "Failed to open " << argv[1] << endl;
+    return 0;
+  }
 
   // construct the CSR graph
   CsrGraph* g = new CsrGraph(f_dimacs);
 
   // define important constants for pagerank
-  // int type = atoi(argv[3]);
-  int type = 3;
+  num_threads = atoi(argv[4]);
+  int type = atoi(argv[3]);
   const double threshold = 0.01;
   const double damping = 0.85;
 
@@ -800,8 +788,7 @@ int main(int argc, char *argv[]) {
   compute_pagerank(type, g, threshold, damping);
 
   // sort and print the labels to the output file
-  // sort_and_print_label(g, argv[2]);
-  sort_and_print_label(g, "rmat15-atomic.txt");
+  sort_and_print_label(g, argv[2]);
 
   // delete the allocated space to the graph avoid memory leak
   delete g;
