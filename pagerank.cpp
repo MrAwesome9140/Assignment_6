@@ -363,7 +363,7 @@ void update_current_label_parallel(int thread_id, CsrGraph* g) {
 void update_current_label_atomic(int thread_id, CsrGraph* g) {
   int num_nodes = g->node_size();
   // Modify this function in any way you want to make pagerank parallel
-  for (int n = thread_id; n <= num_nodes; n+=num_threads) {
+  for (int n = thread_id + 1; n <= num_nodes; n+=num_threads) {
     g->set_label_atomic(n, CURRENT, g->get_label_atomic(n, NEXT));
   }
 }
@@ -566,14 +566,6 @@ void* compute_pagerank_mutex(void* threadarg) {
     // update current labels
     update_current_label_parallel(thread_id, g);
 
-    // if (thread_id == 0) {
-    //   // cout << "CURRENT   ";
-    //   for (int n = 1; n <= num_nodes; n++) {
-    //     cout << g->get_label(n, CURRENT) << " ";
-    //   }
-    //   cout << endl;
-    // }
-
     pthread_barrier_wait(&barrier);
   } while(!converged);
 
@@ -619,7 +611,88 @@ void* compute_pagerank_atomic(void* threadarg) {
       double my_contribution = damping * g->get_label_atomic(n, CURRENT) / (double)g->get_out_degree(n);
       for (int e = g->edge_begin(n); e < g->edge_end(n); e++) {
         int dst = g->get_edge_dst(e);
-        // g->set_label_atomic(dst, NEXT, g->get_label_atomic(dst, NEXT) + my_contribution);
+        g->increment_label_atomic(dst, NEXT, my_contribution);
+      }
+    }
+
+    pthread_barrier_wait(&barrier);
+
+    // check the change across successive iterations to determine convergence
+    bool converge = converged_atomic;
+    while (!converged_atomic.compare_exchange_weak(converge, converge && is_converged_atomic(thread_id, g, threshold)));
+
+    // update current labels
+    update_current_label_atomic(thread_id, g);
+
+    pthread_barrier_wait(&barrier);
+  } while(!converged_atomic.load());
+
+  // scale the sum to 1
+  scale_atomic(thread_id, g);
+
+  return NULL;
+}
+
+int searchForVertexRange(CsrGraph* g, int start, int end, int edge_num) {
+  int left = start;
+  int right = end;
+  int mid = (left + right) / 2;
+  while (left < right) {
+    if (g->edge_begin(mid) <= edge_num && g->edge_end(mid) > edge_num) {
+      return mid;
+    }
+    else if (g->edge_end(mid) <= edge_num) {
+      left = mid + 1;
+    }
+    else {
+      right = mid;
+    }
+    mid = (left + right) / 2;
+  }
+  return end;
+}
+
+void* compute_pagerank_edge_atomic(void* threadarg) {
+  // You have to divide the work and assign it to threads to make this function parallel
+  struct thread_data* my_data = (struct thread_data*) threadarg;
+  CsrGraph* g = my_data->g;
+  double threshold = my_data->threshold;
+  double damping = my_data->damping;
+  int thread_id = my_data->thread_id;
+
+  // initialize
+  int num_nodes = g->node_size();
+  int num_edges = g->size_edges();
+  for (int n = thread_id; n <= num_nodes; n+=num_threads) {
+    g->set_label_atomic(n, CURRENT, 1.0 / num_nodes);
+  }
+
+  int start_edge = thread_id == 0 ? 1 : 
+                    (num_edges * (thread_id / (double) num_threads));
+  int end_edge = thread_id == num_threads - 1 ? g->size_edges() + 1 : 
+                    (num_edges * ((thread_id + 1) / (double) num_threads));
+
+  int start_vertex = searchForVertexRange(g, 1, num_nodes, start_edge);
+  int end_vertex = searchForVertexRange(g, 1, num_nodes, end_edge);
+
+  do {
+    pthread_barrier_wait(&barrier);
+
+    if (thread_id == 0) 
+      converged_atomic.store(true);
+
+    // reset next labels
+    reset_next_label_atomic(thread_id, g, damping);
+
+    pthread_barrier_wait(&barrier);
+
+    // apply current node contribution to others
+    for (int n = start_vertex; n <= end_vertex; n++) {
+      double my_contribution = damping * g->get_label_atomic(n, CURRENT) / (double) g->get_out_degree(n);
+      int e = n == start_vertex ? start_edge : g->edge_begin(n);
+      int stop = n == end_vertex ? end_edge : g->edge_end(n);
+      for (; e < stop; e++) {
+        int dst = g->get_edge_dst(e);
         g->increment_label_atomic(dst, NEXT, my_contribution);
       }
     }
@@ -706,6 +779,10 @@ void compute_pagerank(int type, CsrGraph* g, const double threshold, const doubl
       init_atomic();
       compute_pagerank_func = compute_pagerank_atomic;
       break;
+    case 4:
+      init_atomic();
+      compute_pagerank_func = compute_pagerank_edge_atomic;
+      break;
     default:
       init_mutex();
       compute_pagerank_func = compute_pagerank_mutex;
@@ -725,7 +802,7 @@ void compute_pagerank(int type, CsrGraph* g, const double threshold, const doubl
   }
   clock_gettime(CLOCK_MONOTONIC, &finish);
 
-  if (type == 3) {
+  if (type == 3 || type == 4) {
     for (int n = 1; n <= g->node_size(); n++) {
       g->set_label(n, CURRENT, g->get_label_atomic(n, CURRENT));
     }
