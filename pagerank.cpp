@@ -288,6 +288,13 @@ void reset_next_label(CsrGraph* g, const double damping) {
   }
 }
 
+/**
+ * Resets the next label for each node in parallel.
+ * 
+ * @param thread_id The ID of the current thread.
+ * @param g The CsrGraph object representing the graph.
+ * @param damping The damping factor for the PageRank algorithm.
+ */
 void reset_next_label_parallel(int thread_id, CsrGraph* g, const double damping) {
   int num_nodes = g->node_size();
 
@@ -296,6 +303,13 @@ void reset_next_label_parallel(int thread_id, CsrGraph* g, const double damping)
   }
 }
 
+/**
+ * Resets the next label of nodes in a graph using atomic operations.
+ * 
+ * @param thread_id The ID of the current thread.
+ * @param g The graph to operate on.
+ * @param damping The damping factor for the PageRank algorithm.
+ */
 void reset_next_label_atomic(int thread_id, CsrGraph* g, const double damping) { 
   int num_nodes = g->node_size();
 
@@ -319,6 +333,14 @@ bool is_converged(CsrGraph* g, const double threshold) {
   return true;
 }
 
+/**
+ * Checks if the PageRank algorithm has converged for a specific thread in parallel execution.
+ * 
+ * @param thread_id The ID of the current thread.
+ * @param g The CsrGraph object representing the graph.
+ * @param threshold The convergence threshold.
+ * @return True if the algorithm has converged, False otherwise.
+ */
 bool is_converged_parallel(int thread_id, CsrGraph* g, const double threshold) {
   // if (thread_id == 0 && ++iteration == 27) {
   //   cout << "Should stop here" << endl;
@@ -336,6 +358,14 @@ bool is_converged_parallel(int thread_id, CsrGraph* g, const double threshold) {
   return true;
 }
 
+/**
+ * Checks if the PageRank algorithm has converged for a specific thread.
+ * 
+ * @param thread_id The ID of the current thread.
+ * @param g The CsrGraph object representing the graph.
+ * @param threshold The convergence threshold.
+ * @return True if the algorithm has converged, false otherwise.
+ */
 bool is_converged_atomic(int thread_id, CsrGraph* g, const double threshold) {
   // Modify this function in any way you want to make pagerank parallel
   int num_nodes = g->node_size();
@@ -357,6 +387,15 @@ void update_current_label(CsrGraph* g) {
   }
 }
 
+/**
+ * Updates the current label of nodes in parallel.
+ * 
+ * This function updates the current label of nodes in a CsrGraph object in parallel.
+ * Each thread is assigned a specific range of nodes to update.
+ * 
+ * @param thread_id The ID of the current thread.
+ * @param g The CsrGraph object containing the nodes.
+ */
 void update_current_label_parallel(int thread_id, CsrGraph* g) {
   int num_nodes = g->node_size();
   // Modify this function in any way you want to make pagerank parallel
@@ -365,6 +404,12 @@ void update_current_label_parallel(int thread_id, CsrGraph* g) {
   }
 }
 
+/**
+ * Updates the current label of nodes in a parallel manner.
+ * 
+ * @param thread_id The ID of the current thread.
+ * @param g The CsrGraph object representing the graph.
+ */
 void update_current_label_atomic(int thread_id, CsrGraph* g) {
   int num_nodes = g->node_size();
   // Modify this function in any way you want to make pagerank parallel
@@ -387,6 +432,12 @@ void scale(CsrGraph* g) {
 double o_sum;
 pthread_mutex_t o_sum_mutex;
 
+/**
+ * Scales the labels of the nodes in a CsrGraph object in a parallel manner.
+ * 
+ * @param thread_id The ID of the current thread.
+ * @param g The CsrGraph object containing the nodes and their labels.
+ */
 void scale_mutex(int thread_id, CsrGraph* g) {
   // Modify this function in any way you want to make pagerank parallel
   double sum = 0.0;
@@ -407,6 +458,12 @@ void scale_mutex(int thread_id, CsrGraph* g) {
 
 pthread_spinlock_t o_sum_spinlock;
 
+/**
+ * Scales the labels of the nodes in a graph using a spinlock for parallelization.
+ * 
+ * @param thread_id The ID of the current thread.
+ * @param g The CsrGraph object representing the graph.
+ */
 void scale_spinlock(int thread_id, CsrGraph* g) {
   // Modify this function in any way you want to make pagerank parallel
   double sum = 0.0;
@@ -427,6 +484,12 @@ void scale_spinlock(int thread_id, CsrGraph* g) {
 
 atomic<double> o_sum_atomic{0.0};
 
+/**
+ * Scales the labels of the nodes in a CsrGraph object in a parallel manner.
+ * 
+ * @param thread_id The ID of the current thread.
+ * @param g The CsrGraph object containing the nodes and labels.
+ */
 void scale_atomic(int thread_id, CsrGraph* g) {
   // Modify this function in any way you want to make pagerank parallel
   double sum = 0.0;
@@ -476,6 +539,11 @@ void* compute_pagerank_spinlock(void* threadarg) {
     g->set_label(n, CURRENT, 1.0 / num_nodes);
   }
 
+  pthread_barrier_wait(&barrier);
+
+  if (thread_id == 0) 
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
   do {
     pthread_barrier_wait(&barrier);
 
@@ -518,6 +586,9 @@ void* compute_pagerank_spinlock(void* threadarg) {
     pthread_barrier_wait(&barrier);
   } while(!converged);
 
+  if (thread_id == 0) 
+    clock_gettime(CLOCK_MONOTONIC, &finish);
+
   // scale the sum to 1
   scale_spinlock(thread_id, g);
 
@@ -544,6 +615,11 @@ void* compute_pagerank_mutex(void* threadarg) {
   for (int n = thread_id + 1; n <= num_nodes; n+=num_threads) {
     g->set_label(n, CURRENT, 1.0 / num_nodes);
   }
+
+  pthread_barrier_wait(&barrier);
+
+  if (thread_id == 0) 
+    clock_gettime(CLOCK_MONOTONIC, &start);
 
   do {
     pthread_barrier_wait(&barrier);
@@ -588,6 +664,9 @@ void* compute_pagerank_mutex(void* threadarg) {
     pthread_barrier_wait(&barrier);
   } while(!converged);
 
+  if (thread_id == 0) 
+    clock_gettime(CLOCK_MONOTONIC, &finish);
+
   // scale the sum to 1
   scale_mutex(thread_id, g);
 
@@ -614,6 +693,11 @@ void* compute_pagerank_atomic(void* threadarg) {
   for (int n = thread_id; n <= num_nodes; n+=num_threads) {
     g->set_label_atomic(n, CURRENT, 1.0 / num_nodes);
   }
+
+  pthread_barrier_wait(&barrier);
+
+  if (thread_id == 0) 
+    clock_gettime(CLOCK_MONOTONIC, &start);
 
   do {
     pthread_barrier_wait(&barrier);
@@ -653,12 +737,24 @@ void* compute_pagerank_atomic(void* threadarg) {
     pthread_barrier_wait(&barrier);
   } while(!converged_atomic.load());
 
+  if (thread_id == 0) 
+    clock_gettime(CLOCK_MONOTONIC, &finish);
+
   // scale the sum to 1
   scale_atomic(thread_id, g);
 
   return NULL;
 }
 
+/**
+ * Searches for the vertex range in a given graph based on the specified edge number.
+ * 
+ * @param g The CsrGraph object representing the graph.
+ * @param start The starting index of the vertex range to search.
+ * @param end The ending index of the vertex range to search.
+ * @param edge_num The edge number to search for within the vertex range.
+ * @return The index of the vertex range that contains the specified edge number, or the ending index if not found.
+ */
 int searchForVertexRange(CsrGraph* g, int start, int end, int edge_num) {
   int left = start;
   int right = end;
@@ -701,6 +797,11 @@ void* compute_pagerank_edge_atomic(void* threadarg) {
   int start_vertex = searchForVertexRange(g, 1, num_nodes, start_edge);
   int end_vertex = searchForVertexRange(g, 1, num_nodes, end_edge);
 
+  pthread_barrier_wait(&barrier);
+
+  if (thread_id == 0) 
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
   do {
     pthread_barrier_wait(&barrier);
 
@@ -742,6 +843,9 @@ void* compute_pagerank_edge_atomic(void* threadarg) {
     pthread_barrier_wait(&barrier);
   } while(!converged_atomic.load());
 
+  if (thread_id == 0) 
+    clock_gettime(CLOCK_MONOTONIC, &finish);
+
   // scale the sum to 1
   scale_atomic(thread_id, g);
 
@@ -757,6 +861,8 @@ void compute_pagerank_serial(CsrGraph* g, const double threshold, const double d
   for (int n = 1; n <= num_nodes; n++) {
     g->set_label(n, CURRENT, 1.0 / num_nodes);
   }
+
+  clock_gettime(CLOCK_MONOTONIC, &start);
 
   do {
     // reset next labels
@@ -785,15 +891,15 @@ void compute_pagerank_serial(CsrGraph* g, const double threshold, const double d
     update_current_label(g);
   } while(!convergence);
 
+  clock_gettime(CLOCK_MONOTONIC, &finish);
+
   // scale the sum to 1
   scale(g);
 }
 
 void compute_pagerank(int type, CsrGraph* g, const double threshold, const double damping) {
   if (type == 0) {
-    clock_gettime(CLOCK_MONOTONIC, &start);
     compute_pagerank_serial(g, threshold, damping);
-    clock_gettime(CLOCK_MONOTONIC, &finish);
     return;
   }
 
@@ -829,8 +935,6 @@ void compute_pagerank(int type, CsrGraph* g, const double threshold, const doubl
       break;
   }
 
-
-  clock_gettime(CLOCK_MONOTONIC, &start);
   for (int i = 0; i < num_threads; i++) {
     thread_ids[i] = i;
     struct thread_data* data = new thread_data {i, g, threshold, damping};
@@ -840,7 +944,6 @@ void compute_pagerank(int type, CsrGraph* g, const double threshold, const doubl
   for (int i = 0; i < num_threads; i++) {
     pthread_join(threads[i], NULL);
   }
-  clock_gettime(CLOCK_MONOTONIC, &finish);
 
   if (type == 3 || type == 4) {
     for (int n = 1; n <= g->node_size(); n++) {
