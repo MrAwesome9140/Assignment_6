@@ -254,6 +254,11 @@ public:
     return ci[e];
   }
 
+  int get_edge_weight(int e) {
+    // return the weight of edge e (index for ai)
+    return ai[e];
+  }
+
   void acquire_lock(int n) {
     // acquire the lock for node n
     pthread_mutex_lock(&node_locks[n]);
@@ -483,7 +488,14 @@ void* compute_pagerank_spinlock(void* threadarg) {
 
     // apply current node contribution to others
     for (int n = thread_id; n <= num_nodes; n+=num_threads) {
-      double my_contribution = damping * g->get_label(n, CURRENT) / (double)g->get_out_degree(n);
+      // compute total out weight
+      double out_weight = 0.0;
+      for (int e = g->edge_begin(n); e < g->edge_end(n); e++) {
+        out_weight += g->get_edge_weight(e);
+      }
+      out_weight = out_weight > 0.0 ? out_weight : 1.0;
+
+      double my_contribution = damping * g->get_label(n, CURRENT) / out_weight;
       for (int e = g->edge_begin(n); e < g->edge_end(n); e++) {
         int dst = g->get_edge_dst(e);
         g->acquire_spinlock(dst);
@@ -546,7 +558,14 @@ void* compute_pagerank_mutex(void* threadarg) {
 
     // apply current node contribution to others
     for (int n = thread_id + 1; n <= num_nodes; n+=num_threads) {
-      double my_contribution = damping * g->get_label(n, CURRENT) / (double)g->get_out_degree(n);
+      // compute total out weight
+      double out_weight = 0.0;
+      for (int e = g->edge_begin(n); e < g->edge_end(n); e++) {
+        out_weight += g->get_edge_weight(e);
+      }
+      out_weight = out_weight > 0.0 ? out_weight : 1.0;
+
+      double my_contribution = damping * g->get_label(n, CURRENT) / out_weight;
       for (int e = g->edge_begin(n); e < g->edge_end(n); e++) {
         int dst = g->get_edge_dst(e);
         g->acquire_lock(dst);
@@ -608,7 +627,14 @@ void* compute_pagerank_atomic(void* threadarg) {
 
     // apply current node contribution to others
     for (int n = thread_id + 1; n <= num_nodes; n+=num_threads) {
-      double my_contribution = damping * g->get_label_atomic(n, CURRENT) / (double)g->get_out_degree(n);
+      // compute total out weight
+      double out_weight = 0.0;
+      for (int e = g->edge_begin(n); e < g->edge_end(n); e++) {
+        out_weight += g->get_edge_weight(e);
+      }
+      out_weight = out_weight > 0.0 ? out_weight : 1.0;
+
+      double my_contribution = damping * g->get_label_atomic(n, CURRENT) / out_weight;
       for (int e = g->edge_begin(n); e < g->edge_end(n); e++) {
         int dst = g->get_edge_dst(e);
         g->increment_label_atomic(dst, NEXT, my_contribution);
@@ -688,7 +714,14 @@ void* compute_pagerank_edge_atomic(void* threadarg) {
 
     // apply current node contribution to others
     for (int n = start_vertex; n <= end_vertex; n++) {
-      double my_contribution = damping * g->get_label_atomic(n, CURRENT) / (double) g->get_out_degree(n);
+      // compute total out weight
+      double out_weight = 0.0;
+      for (int e = g->edge_begin(n); e < g->edge_end(n); e++) {
+        out_weight += g->get_edge_weight(e);
+      }
+      out_weight = out_weight > 0.0 ? out_weight : 1.0;
+
+      double my_contribution = damping * g->get_label_atomic(n, CURRENT) / out_weight;
       int e = n == start_vertex ? start_edge : g->edge_begin(n);
       int stop = n == end_vertex ? end_edge : g->edge_end(n);
       for (; e < stop; e++) {
@@ -731,7 +764,14 @@ void compute_pagerank_serial(CsrGraph* g, const double threshold, const double d
 
     // apply current node contribution to others
     for (int n = 1; n <= num_nodes; n++) {
-      double my_contribution = damping * g->get_label(n, CURRENT) / (double)g->get_out_degree(n);
+      // compute total out edge weight
+      double out_weight = 0.0;
+      for (int e = g->edge_begin(n); e < g->edge_end(n); e++) {
+        out_weight += g->get_edge_weight(e);
+      }
+      out_weight = out_weight > 0.0 ? out_weight : 1.0;
+
+      double my_contribution = damping * g->get_label(n, CURRENT) / out_weight;
       for (int e = g->edge_begin(n); e < g->edge_end(n); e++) {
         int dst = g->get_edge_dst(e);
         g->set_label(dst, NEXT, g->get_label(dst, NEXT) + my_contribution);
